@@ -79,7 +79,7 @@ def prepare_dataset(args, tokenizer):
     ]
 
 
-def count_truncated(examples, max_length):
+def count_at_limit(examples, max_length):
     lengths = ("input_ids", "text_ids", "code_ids")
     return sum(
         any(len(example[name]) >= max_length for name in lengths if name in example)
@@ -133,7 +133,7 @@ def main(argv=None):
     if not args.regular:
         jepa.check_view_positions(examples, args.last_token)
     print(f"Examples at the --max_length limit of {args.max_length} (cut, or exactly that long): "
-          f"{count_truncated(examples, args.max_length)}")
+          f"{count_at_limit(examples, args.max_length)}")
 
     def save_epoch(epoch):
         model_lib.save(

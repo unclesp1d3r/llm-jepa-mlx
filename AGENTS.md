@@ -30,8 +30,9 @@ checks were measured wrong on the real test sets. Do not restore upstream's beha
 - Spider: queries run through Python's `sqlite3` on a read-only connection that permits only
   reading, with double-quoted text values accepted. A query that fails is wrong. Row order counts
   only when the reference has `ORDER BY`. A reference that cannot run makes its example wrong and is
-  reported. Never route model-written SQL through the `sqlite3` command-line tool: it executes
-  dot-commands such as `.shell`.
+  reported. A missing, empty or corrupt database file raises; only the query itself is forgiven.
+  Never route model-written SQL through the `sqlite3` command-line tool: it executes dot-commands
+  such as `.shell`.
 
 These look like bugs but are upstream behavior kept for parity. Do not "fix" them silently:
 

@@ -156,11 +156,15 @@ def test_spider_unrunnable_reference_makes_every_output_wrong_and_is_reported(tm
     assert not _spider_score("SELECT name FROM item", messages, path)
     assert not _spider_score("SELECT name FROM item WHERE qty > 99", messages, path)
     assert evaluate.spider_score("SELECT name FROM item", messages, path) == (False, "shop")
+    assert evaluate.spider_score("this is not sql", messages, path) == (False, "shop")
+    empty_reference = [*messages[:2], {"content": "-- no query here"}]
+    assert evaluate.spider_score("SELECT name FROM item", empty_reference, path) == (False, "shop")
 
 
 def test_spider_runnable_reference_is_not_reported_unscorable(tmp_path):
     messages, path = _spider_example(tmp_path, "SELECT name FROM item")
     assert evaluate.spider_score("SELECT name FROM item", messages, path) == (True, None)
+    assert evaluate.spider_score("this is not sql", messages, path) == (False, None)
 
 
 @pytest.mark.parametrize("output", ["", "   ", ";", "-- nothing"])
@@ -185,6 +189,21 @@ def test_report_names_the_examples_whose_reference_cannot_run(capsys):
     assert "Success Rate: m, 0.5" in printed
     assert "1 examples have a reference query that cannot run" in printed
     assert "shop" in printed
+
+
+@pytest.mark.parametrize("content", [b"", b"this is not a database" * 50])
+def test_spider_database_file_that_is_empty_or_corrupt_raises_error_naming_the_path(tmp_path, content):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "shop.sqlite").write_bytes(content)
+    messages = [{}, {"content": "For db_id:[shop] q"}, {"content": "SELECT name FROM item"}]
+    with pytest.raises(sqlite3.DatabaseError, match="shop.sqlite"):
+        evaluate.spider_score("SELECT name FROM item", messages, str(tmp_path))
+
+
+def test_spider_example_without_a_database_id_raises_error_naming_the_marker(tmp_path):
+    messages = [{}, {"content": "list items"}, {"content": "SELECT 1"}]
+    with pytest.raises(ValueError, match="For db_id"):
+        evaluate.spider_score("SELECT 1", messages, str(tmp_path))
 
 
 def test_spider_missing_database_file_raises_error_naming_the_path(tmp_path):

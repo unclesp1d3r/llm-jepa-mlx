@@ -5,14 +5,14 @@ from tests.test_data import prepare
 from tests.test_jepa import EXAMPLES, tiny_model
 
 
-def test_count_truncated_counts_examples_that_reached_max_length():
+def test_count_at_limit_counts_examples_that_reached_max_length():
     short = {"input_ids": [1, 2], "labels": [1, 2], "text_ids": [1, 2], "code_ids": [1, 2]}
     examples = [prepare(max_length=5), short, prepare(max_length=5)]
-    assert finetune.count_truncated(examples, max_length=5) == 2
+    assert finetune.count_at_limit(examples, max_length=5) == 2
 
 
-def test_count_truncated_is_zero_when_no_example_reaches_max_length():
-    assert finetune.count_truncated([prepare(max_length=512)], max_length=512) == 0
+def test_count_at_limit_is_zero_when_no_example_reaches_max_length():
+    assert finetune.count_at_limit([prepare(max_length=512)], max_length=512) == 0
 
 
 def tiny_training(num_epochs, batch_size=1, grad_accum=4, examples=10):

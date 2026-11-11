@@ -105,6 +105,7 @@ def _write_model(staging, model, tokenizer, config):
 
 
 def _weights_last(files):
+    # a crash before the weights move leaves the old weights loadable
     return sorted(files, key=lambda path: (path.match(WEIGHT_PATTERN), path.name))
 
 

@@ -6,6 +6,10 @@ An Apple Silicon port of the reference code for
 NVIDIA machines: <https://github.com/rbalestr-lab/llm-jepa>. This version runs on a Mac with
 [MLX](https://github.com/ml-explore/mlx) and [mlx-lm](https://github.com/ml-explore/mlx-lm).
 
+It is not a line-for-line port. Every place it behaves differently from upstream is listed under
+[Differences from the PyTorch original](#differences-from-the-pytorch-original); two of those
+change accuracy numbers.
+
 ## What LLM-JEPA is
 
 Ordinary fine-tuning teaches a model to predict the next token. LLM-JEPA adds a second objective in
@@ -31,7 +35,7 @@ Read this before trusting any number that comes out of it.
 
 | | |
 |---|---|
-| Unit tests | 81 pass, offline, in a few seconds |
+| Unit tests | 84 pass, offline, in a few seconds |
 | LoRA + JEPA end to end | Ran on Llama-3.2-1B: trained, saved, reloaded, evaluated |
 | Token layout | Checked against upstream on a real example |
 | Full fine-tuning | Three steps ran and the loss fell; a complete run was never finished |
@@ -174,37 +178,83 @@ twice the model's size. `--keep_epochs` adds one model per epoch.
 
 ## Differences from the PyTorch original
 
+This is not a line-for-line port. Everything below is a place where this code does something
+different from <https://github.com/rbalestr-lab/llm-jepa>. Unless a line says otherwise, the
+difference is deliberate.
+
+### Scoring: numbers that are not comparable with upstream
+
+Scores on NQ-Open and Spider are not comparable with upstream's scripts or with the numbers the
+paper reports. Upstream's checks were measured on the real test sets and found wrong.
+
+- **NQ-Open.** A reference answer must appear in the output, as the paper states. Upstream checks
+  the reverse, so on the 1,769 test questions an empty output scores 100% there and
+  `The answer is <right answer>.` scores 0%.
+- **Spider: a query must run and return the reference's rows.** Upstream compares what the
+  `sqlite3` command-line tool prints, and a failed query prints nothing, so it matches any reference
+  that also prints nothing. With `sqlite3` 3.54.1 the text `this is not sql` scores correct on 365
+  of 1,447 test examples there. Here it scores correct on none, and so does an output that is
+  empty or only a comment.
+- **Spider: double-quoted text values are read as text.** 326 references use them. Upstream leaves
+  this to the installed `sqlite3` tool, and newer versions reject them.
+- **Spider: row order counts only when the reference has an `ORDER BY`** (336 of 1,447 do).
+  Upstream compares printed output line by line.
+- **Spider: a reference that cannot run makes its example wrong** and is named in the report. One
+  test reference (`document_management`) is malformed. Upstream scores any failing output correct
+  on it.
+- **Spider: a missing, empty or corrupt database file is an error.** Upstream scores every output
+  correct when the database path is wrong.
+- **Spider: model-written SQL runs on a read-only connection** through Python's SQLite library.
+  Upstream passes it to the `sqlite3` command-line tool, which also executes dot-commands such as
+  `.shell`. The command-line tool is not needed here.
+- **Datasets are recognised by file name,** wherever the file is. Upstream matches the start of the
+  path as given, so its scripts must run from the dataset folder.
+- **HellaSwag prompts are cut at `--max_length`.** Upstream cuts them at `--max_new_tokens`.
+- **Generation stops at any of the model's end-of-sequence tokens.** Upstream stops at the
+  tokenizer's single `eos_token_id`.
+
+### Training
+
 - **No 4D additive attention mask.** Upstream packs Text and Code into one row behind a
   block-causal mask because it pads every row to `--max_length`. Here each view is its own row,
   padded only to the longest view in the batch. The embeddings are the same and the attention work
   is smaller. `--additive_mask` and `--same_flop` do not exist.
-- **Effective batch size.** The paper ran 8 GPUs × batch 4 × 4 accumulation steps, 128 examples per
-  update. The defaults here give 16. Use `--grad_accum 32` to match.
-- **`--jepa_ratio` always applies.** Upstream only honours it together with `--additive_mask`.
 - **Hand-written training loop.** It follows the Hugging Face `Trainer` defaults upstream relies on:
   AdamW without weight decay, linear decay to zero, gradient clipping at 1.0, and a partial
   accumulation group applied at the end of each epoch. Shuffle order differs, so runs are not
-  bit-for-bit comparable.
-- **NQ-Open and Spider are scored differently, on purpose.** Scores on these two datasets are not
-  comparable with upstream's scripts or with the numbers the paper reports.
-  - *NQ-Open:* a reference answer must appear in the output, as the paper states. Upstream checks the
-    reverse, so on the 1,769 test questions an empty output scores 100% there and
-    `The answer is <right answer>.` scores 0%.
-  - *Spider:* a query must run and return the reference's rows. Upstream compares what the `sqlite3`
-    command-line tool prints, and a failed query prints nothing, so it matches any reference that
-    also prints nothing. With `sqlite3` 3.54.1 the text `this is not sql` scores correct on 365 of
-    1,447 test examples there; here it scores correct on none.
-  - *Spider details:* double-quoted text values are read as text (326 references use them), and row
-    order counts only when the reference has an `ORDER BY` (336 of 1,447 do).
+  bit-for-bit comparable. Losses are logged per batch, not per optimizer update.
+- **Effective batch size.** The paper ran 8 GPUs × batch 4 × 4 accumulation steps, 128 examples per
+  update. The defaults here give 16. Use `--grad_accum 32` to match.
+- **`--jepa_ratio` always applies.** Upstream only honours it together with `--additive_mask`.
+- **`--gamma` also scales `--regular` runs.** Upstream's baseline ignores it.
 - **Training checks itself.** It stops at a loss that is not a finite number, and before the first
   step it checks that every embedding position lies inside its view. Upstream has neither check.
-- **A model is saved every epoch, and the output folder is never deleted.** Upstream deletes the
-  output folder at the start of a run.
+- **New-token embeddings start at the exact mean embedding.** Upstream's resize adds a very small
+  random offset; this was recalled, not checked against the transformers source.
+- **Gemma is recognised by `gemma` anywhere in the model name,** so MLX community repos work.
+  Upstream looks for `google/gemma`.
+
+### Saving
+
+- **The latest model replaces the previous one at the end of every epoch.** Upstream keeps a
+  `checkpoint-N` folder per epoch; `--keep_epochs` does the same here with `epoch-N` folders.
+- **The output folder is never deleted.** Upstream deletes it at the start of a run. Here a save
+  removes only model weight files it has replaced.
+- **A save cannot be resumed.** Optimizer state is not saved; upstream's checkpoints include it.
+
+### Evaluation output
+
 - **`evaluate.py --output_file`** writes per-example results as each example is scored. Upstream
   leaves the file empty.
-- **Not ported:** `stp.py` (Semantic Tube Prediction, a different paper), `finetune8bh200.py`,
-  multi-GPU training, FLOP tracking, the t-SNE dump, train/test splitting, resuming an interrupted
-  run, and OpenELM and phi support.
+- **`--similarity`** uses the last token of the last layer only. Upstream also offers mean and
+  first-token pooling and a choice of layer.
+
+### Not ported
+
+- `stp.py` (Semantic Tube Prediction, a different paper) and `finetune8bh200.py`.
+- Multi-GPU training, FLOP tracking, gradient checkpointing, and 4-bit or 8-bit loading.
+- The t-SNE dump, train/test splitting, and the `--eval_file`, `--data_file` and `--debug` flags.
+- OpenELM and phi support.
 
 ## Known caveats
 
