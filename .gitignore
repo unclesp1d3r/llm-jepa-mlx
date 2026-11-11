@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store
+
+# run outputs
+fine-tuned/
+eval.jsonl
+output.txt
+spider_data/
+spider_data.zip
+
+# the paper is on arXiv; link to it instead of redistributing the PDF
+*.pdf
