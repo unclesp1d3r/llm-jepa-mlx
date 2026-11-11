@@ -1,3 +1,4 @@
+import argparse
 import json
 import sqlite3
 
@@ -153,12 +154,37 @@ def test_spider_unrunnable_reference_makes_every_output_wrong_and_is_reported(tm
     messages, path = _spider_example(tmp_path, "SELECT nope FROM nowhere")
     assert not _spider_score("SELECT nope FROM nowhere", messages, path)
     assert not _spider_score("SELECT name FROM item", messages, path)
-    assert evaluate.spider_unscorable_db_id(messages, path) == "shop"
+    assert not _spider_score("SELECT name FROM item WHERE qty > 99", messages, path)
+    assert evaluate.spider_score("SELECT name FROM item", messages, path) == (False, "shop")
 
 
 def test_spider_runnable_reference_is_not_reported_unscorable(tmp_path):
     messages, path = _spider_example(tmp_path, "SELECT name FROM item")
-    assert evaluate.spider_unscorable_db_id(messages, path) is None
+    assert evaluate.spider_score("SELECT name FROM item", messages, path) == (True, None)
+
+
+@pytest.mark.parametrize("output", ["", "   ", ";", "-- nothing"])
+def test_spider_output_that_is_not_a_query_is_wrong_when_reference_returns_no_rows(tmp_path, output):
+    messages, path = _spider_example(tmp_path, "SELECT name FROM item WHERE qty > 99")
+    assert not _spider_score(output, messages, path)
+
+
+def test_spider_ordered_reference_accepts_the_same_rows_in_the_same_order(tmp_path):
+    messages, path = _spider_example(tmp_path, "SELECT name FROM item ORDER BY name")
+    assert _spider_score("SELECT name FROM item ORDER BY name ASC", messages, path)
+
+
+def test_report_names_the_examples_whose_reference_cannot_run(capsys):
+    args = argparse.Namespace(model_name="m", startswith=False, similarity=False)
+    results = [
+        {"correct": False, "startswith": False, "unscorable_db_id": "shop"},
+        {"correct": True, "startswith": True},
+    ]
+    evaluate.report(args, results)
+    printed = capsys.readouterr().out
+    assert "Success Rate: m, 0.5" in printed
+    assert "1 examples have a reference query that cannot run" in printed
+    assert "shop" in printed
 
 
 def test_spider_missing_database_file_raises_error_naming_the_path(tmp_path):

@@ -74,9 +74,25 @@ def test_next_save_removes_the_staging_folder_an_interrupted_save_left(tmp_path,
         with pytest.raises(OSError):
             model_lib.save(tmp_path, tiny_model(), tiny_tokenizer(), TINY_CONFIG)
     assert len(list(tmp_path.iterdir())) == 1  # only the leftover staging folder
+    (next(tmp_path.iterdir()) / "leftover.bin").write_bytes(b"from the interrupted save")
     model_lib.save(tmp_path, tiny_model(), tiny_tokenizer(), TINY_CONFIG)
     assert not any(p.is_dir() for p in tmp_path.iterdir())
+    assert not (tmp_path / "leftover.bin").exists()
     assert_same_weights(mlx_lm.load(str(tmp_path))[0], tiny_model())
+
+
+def test_save_moves_the_weight_file_into_place_after_every_other_file(tmp_path, monkeypatch):
+    moved = []
+    real_replace = model_lib.os.replace
+
+    def record_then_replace(source, destination):
+        moved.append(Path(destination).name)
+        real_replace(source, destination)
+
+    monkeypatch.setattr(model_lib.os, "replace", record_then_replace)
+    model_lib.save(tmp_path, tiny_model(), tiny_tokenizer(), TINY_CONFIG)
+    assert len(moved) > 1
+    assert moved[-1] == "model.safetensors"
 
 
 def test_save_removes_stale_weight_files_it_replaced_and_keeps_other_files(tmp_path):

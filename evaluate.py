@@ -23,13 +23,15 @@ READ_ACTIONS = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCT
 
 
 def _run_sql(db_file, query):
-    """Rows of a read-only query, or None when it cannot run. Text stays bytes so any content compares."""
+    """Rows of a query, or None when it cannot run."""
     conn = sqlite3.connect(f"{Path(db_file).resolve().as_uri()}?mode=ro", uri=True)
     try:
         conn.setconfig(sqlite3.SQLITE_DBCONFIG_DQS_DML, True)
         conn.set_authorizer(_read_only_authorizer)
-        conn.text_factory = bytes
-        return conn.execute(query).fetchall()
+        conn.text_factory = bytes  # results that are not valid UTF-8 must still compare
+        cursor = conn.execute(query)
+        # an empty or comment-only string executes without being a query
+        return cursor.fetchall() if cursor.description else None
     except (sqlite3.Error, ValueError):
         return None
     finally:
@@ -54,20 +56,17 @@ def _same_rows(generated_rows, reference_rows, reference_sql):
     return Counter(generated_rows) == Counter(reference_rows)
 
 
-def _spider_correct(generated, messages, spider_path):
-    _, db_file = _spider_db_file(messages, spider_path)
+def spider_score(generated, messages, spider_path):
+    """(whether the output is correct, the database id when the reference query cannot run)."""
+    db_id, db_file = _spider_db_file(messages, spider_path)
     reference_sql = messages[2]["content"]
     reference_rows = _run_sql(db_file, reference_sql)
+    if reference_rows is None:
+        return False, db_id
     generated_rows = _run_sql(db_file, generated)
-    if reference_rows is None or generated_rows is None:
-        return False
-    return _same_rows(generated_rows, reference_rows, reference_sql)
-
-
-def spider_unscorable_db_id(messages, spider_path):
-    """The database id when the reference query cannot run, else None."""
-    db_id, db_file = _spider_db_file(messages, spider_path)
-    return db_id if _run_sql(db_file, messages[2]["content"]) is None else None
+    if generated_rows is None:
+        return False, None
+    return _same_rows(generated_rows, reference_rows, reference_sql), None
 
 
 def _gsm8k_answer(text):
@@ -83,7 +82,7 @@ def is_correct(generated, messages, input_file, spider_path="", startswith=False
     if dataset.startswith("gsm8k"):
         return _gsm8k_answer(generated) == _gsm8k_answer(expected)
     if dataset.startswith("spider"):
-        return _spider_correct(generated, messages, spider_path)
+        return spider_score(generated, messages, spider_path)[0]
     if dataset.startswith("nq_open"):
         return any(answer in generated for answer in expected.split("; "))
     return generated == expected
@@ -156,14 +155,18 @@ def evaluate_example(args, model, wrapper, messages):
     else:
         generated = generate_response(model, wrapper, prompt_ids, args.max_new_tokens)
 
+    if os.path.basename(args.input_file).startswith("spider"):
+        correct, unscorable_db_id = spider_score(generated, messages, args.spider_path)
+    else:
+        correct, unscorable_db_id = is_correct(generated, messages, args.input_file), None
     result = {
         "generated": generated,
         "expected": messages[2]["content"],
-        "correct": is_correct(generated, messages, args.input_file, args.spider_path),
+        "correct": correct,
         "startswith": is_correct(generated, messages, args.input_file, startswith=True),
     }
-    if os.path.basename(args.input_file).startswith("spider"):
-        result = {**result, "unscorable_db_id": spider_unscorable_db_id(messages, args.spider_path)}
+    if unscorable_db_id:
+        result = {**result, "unscorable_db_id": unscorable_db_id}
     if not args.similarity:
         return result
     views = (get_user_messages(messages), get_assistant_messages(original, messages))
@@ -195,7 +198,6 @@ def report(args, results):
 
 
 def run_examples(rows, score, out=None):
-    """Score each row, writing and flushing its JSON line as soon as it exists."""
     results = []
     for row in rows:
         result = score(row["messages"])

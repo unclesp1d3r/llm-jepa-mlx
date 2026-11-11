@@ -40,3 +40,12 @@ def test_train_calls_the_save_callback_at_the_end_of_each_epoch_until_one_raises
 def test_train_returns_the_number_of_optimizer_updates_it_applied():
     args, examples = tiny_training(num_epochs=3, grad_accum=4)  # 10 batches per epoch
     assert finetune.train(args, tiny_model(), examples, lambda epoch: None) == 9
+
+
+def test_main_stops_before_training_when_an_embedding_position_is_outside_its_view(monkeypatch):
+    short_view = [{"input_ids": [1, 2], "labels": [-100, 2], "text_ids": [1, 2], "code_ids": [1, 2, 3]}]
+    monkeypatch.setattr(finetune.model_lib, "load", lambda *args, **kwargs: (tiny_model(), None, {}))
+    monkeypatch.setattr(finetune, "prepare_dataset", lambda args, tokenizer: short_view)
+    monkeypatch.setattr(finetune, "train", lambda *args: pytest.fail("training started"))
+    with pytest.raises(ValueError, match="example 0"):
+        finetune.main(["--train_file", "unused.jsonl", "--last_token", "-3"])

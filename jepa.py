@@ -35,7 +35,6 @@ def collate(examples, last_token):
 
 
 def check_view_positions(examples, last_token):
-    """Raise, naming the example, when `len(view) + last_token` falls outside its view."""
     for index, example in enumerate(examples):
         for name in ("text_ids", "code_ids"):
             length = len(example[name])

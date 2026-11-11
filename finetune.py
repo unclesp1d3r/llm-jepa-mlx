@@ -80,7 +80,6 @@ def prepare_dataset(args, tokenizer):
 
 
 def count_truncated(examples, max_length):
-    """Number of examples whose inputs or views reached max_length."""
     lengths = ("input_ids", "text_ids", "code_ids")
     return sum(
         any(len(example[name]) >= max_length for name in lengths if name in example)
@@ -89,7 +88,6 @@ def count_truncated(examples, max_length):
 
 
 def train(args, model, examples, on_epoch_end):
-    """Train, calling on_epoch_end(epoch) after each epoch; returns the optimizer updates applied."""
     steps_per_epoch = len(examples) // args.batch_size  # drops the last partial batch
     # like transformers.Trainer, a partial accumulation group is applied at each epoch's end
     updates = math.ceil(steps_per_epoch / args.grad_accum) * args.num_epochs
@@ -134,7 +132,7 @@ def main(argv=None):
     print(f"Train samples: {len(examples)}")
     if not args.regular:
         jepa.check_view_positions(examples, args.last_token)
-    print(f"Examples cut at --max_length {args.max_length}: "
+    print(f"Examples at the --max_length limit of {args.max_length} (cut, or exactly that long): "
           f"{count_truncated(examples, args.max_length)}")
 
     def save_epoch(epoch):

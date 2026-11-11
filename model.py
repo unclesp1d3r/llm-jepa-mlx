@@ -15,9 +15,9 @@ from data import SPECIAL_TOKENS
 
 INIT_STD = 0.02  # transformers' initializer_range default
 LORA_DROPOUT = 0.1
+LORA_SCALE = 2.0  # upstream uses lora_alpha = 2 * rank
 STAGING_DIR = ".saving"
 WEIGHT_PATTERN = "model*.safetensors"  # what mlx_lm.load reads from a model folder
-LORA_SCALE = 2.0  # upstream uses lora_alpha = 2 * rank
 
 
 def resize_embeddings(model, vocab_size):
@@ -109,11 +109,8 @@ def _weights_last(files):
 
 
 def save(output_dir, model, tokenizer, config, *, epoch=None, keep_epoch=False):
-    """Write a complete model into a staging folder, then rename it into place.
-
-    An interrupted save leaves the previous model untouched. The weight files are renamed last;
-    for a model stored as several weight files, a crash between those renames can leave a mix.
-    """
+    # shortcut: files are renamed into place one by one, so a crash between the renames of a
+    # model stored as several weight files leaves a mix; swap atomically if that is ever reported
     output_dir = Path(output_dir)
     staging = output_dir / STAGING_DIR
     if staging.exists():

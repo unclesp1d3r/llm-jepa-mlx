@@ -31,7 +31,7 @@ Read this before trusting any number that comes out of it.
 
 | | |
 |---|---|
-| Unit tests | 73 pass, offline, in a few seconds |
+| Unit tests | 81 pass, offline, in a few seconds |
 | LoRA + JEPA end to end | Ran on Llama-3.2-1B: trained, saved, reloaded, evaluated |
 | Token layout | Checked against upstream on a real example |
 | Full fine-tuning | Three steps ran and the loss fell; a complete run was never finished |
@@ -196,6 +196,8 @@ twice the model's size. `--keep_epochs` adds one model per epoch.
     1,447 test examples there; here it scores correct on none.
   - *Spider details:* double-quoted text values are read as text (326 references use them), and row
     order counts only when the reference has an `ORDER BY` (336 of 1,447 do).
+- **Training checks itself.** It stops at a loss that is not a finite number, and before the first
+  step it checks that every embedding position lies inside its view. Upstream has neither check.
 - **A model is saved every epoch, and the output folder is never deleted.** Upstream deletes the
   output folder at the start of a run.
 - **`evaluate.py --output_file`** writes per-example results as each example is scored. Upstream
