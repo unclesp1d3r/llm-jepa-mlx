@@ -12,3 +12,4 @@ spider_data.zip
 
 # the paper is on arXiv; link to it instead of redistributing the PDF
 *.pdf
+docs/plans/
