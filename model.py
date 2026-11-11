@@ -34,11 +34,8 @@ def resize_embeddings(model, vocab_size):
     model.args.vocab_size = vocab_size
 
 
-def reinitialize(model, seed=None):
+def reinitialize(model):
     """Random weights for pretraining from scratch (normal matrices, unit norms, zero biases)."""
-    if seed is not None:
-        mx.random.seed(seed)
-
     def init(name, param):
         if param.ndim >= 2:
             return (INIT_STD * mx.random.normal(param.shape)).astype(param.dtype)
@@ -47,7 +44,7 @@ def reinitialize(model, seed=None):
     model.update(tree_unflatten([(n, init(n, p)) for n, p in tree_flatten(model.parameters())]))
 
 
-def load(model_name, *, pretrain=False, seed=None):
+def load(model_name, *, pretrain=False):
     """Load an unquantized mlx-lm model and add the LLM-JEPA special tokens.
 
     Returns (model, Hugging Face tokenizer, config).
@@ -60,7 +57,7 @@ def load(model_name, *, pretrain=False, seed=None):
     if pretrain:
         # shortcut: downloads the pretrained weights only to discard them,
         # build from config alone if that download ever matters
-        reinitialize(model, seed)
+        reinitialize(model)
 
     tokenizer = wrapper._tokenizer
     new_tokens = [token for token in SPECIAL_TOKENS if token not in tokenizer.get_vocab()]

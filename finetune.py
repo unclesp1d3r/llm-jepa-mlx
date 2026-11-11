@@ -124,13 +124,10 @@ def train(args, model, examples, on_epoch_end):
 
 def main(argv=None):
     args = parse_args(argv)
-    random.seed(args.finetune_seed)
     mx.random.seed(args.finetune_seed)
 
     print(f"Model: {args.model_name}\nTrain file: {args.train_file}\nLoRA: {args.lora}")
-    model, tokenizer, config = model_lib.load(
-        args.model_name, pretrain=args.pretrain, seed=args.finetune_seed
-    )
+    model, tokenizer, config = model_lib.load(args.model_name, pretrain=args.pretrain)
     if args.lora:
         model_lib.apply_lora(model, args.lora_rank)
     examples = prepare_dataset(args, tokenizer)

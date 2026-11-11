@@ -170,7 +170,7 @@ def test_reinitialize_changes_weights_and_resets_norms():
     model = tiny_model()
     model.model.norm.weight = model.model.norm.weight * 3
     old = model.model.embed_tokens.weight * 1
-    model_lib.reinitialize(model, seed=1)
+    model_lib.reinitialize(model)
     assert not mx.array_equal(model.model.embed_tokens.weight, old)
     assert mx.array_equal(model.model.norm.weight, mx.ones(32))
 

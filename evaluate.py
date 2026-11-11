@@ -5,13 +5,13 @@ import json
 import os
 import re
 import sqlite3
+import statistics
 from collections import Counter
 from contextlib import nullcontext
 from pathlib import Path
 
 import mlx.core as mx
 import mlx_lm
-import numpy as np
 from tqdm import tqdm
 
 from data import get_assistant_messages, get_messages, get_user_messages, load_jsonl
@@ -191,7 +191,7 @@ def report(args, results):
             sims = [r["similarity"] for r in group]
             if sims:
                 print(f"cosine similarity ({name}, n={len(sims)}): "
-                      f"mean {np.mean(sims):.4f} std {np.std(sims):.4f}")
+                      f"mean {statistics.mean(sims):.4f} std {statistics.pstdev(sims):.4f}")
 
 
 def run_examples(rows, score, out=None):

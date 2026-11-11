@@ -2,8 +2,8 @@
 name = "llm-jepa-mlx"
 version = "0.1.0"
 description = "MLX port of LLM-JEPA (arXiv:2509.14252)"
-requires-python = ">=3.11,<3.14"
-dependencies = ["mlx-lm>=0.28", "numpy", "tqdm"]
+requires-python = ">=3.12,<3.14"
+dependencies = ["mlx-lm>=0.32", "tqdm"]
 
 [dependency-groups]
 dev = ["pytest"]
