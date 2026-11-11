@@ -1,3 +1,5 @@
+import math
+
 import mlx.core as mx
 import mlx.optimizers as optim
 import pytest
@@ -171,3 +173,38 @@ def test_reinitialize_changes_weights_and_resets_norms():
     model_lib.reinitialize(model, seed=1)
     assert not mx.array_equal(model.model.embed_tokens.weight, old)
     assert mx.array_equal(model.model.norm.weight, mx.ones(32))
+
+
+def test_train_step_raises_naming_the_loss_when_a_weight_is_nan():
+    model = tiny_model()
+    model.model.norm.weight = mx.full(model.model.norm.weight.shape, float("nan"))
+    batch = jepa.collate(EXAMPLES, last_token=-1)
+    step = jepa.make_train_step(model, optim.AdamW(learning_rate=1e-2, weight_decay=0.0),
+                                gamma=1.0, lbd=1.0, kind="cosine", grad_accum=1)
+    with pytest.raises(FloatingPointError, match="loss"):
+        step(batch, use_jepa=True)
+
+
+def test_train_step_returns_finite_metrics_for_a_normal_batch():
+    model = tiny_model()
+    batch = jepa.collate(EXAMPLES, last_token=-1)
+    step = jepa.make_train_step(model, optim.AdamW(learning_rate=1e-2, weight_decay=0.0),
+                                gamma=1.0, lbd=1.0, kind="cosine", grad_accum=1)
+    metrics = step(batch, use_jepa=True)
+    assert all(math.isfinite(value) for value in metrics.values())
+
+
+def test_check_view_positions_names_the_example_with_a_view_too_short_for_last_token():
+    examples = [{"input_ids": [1, 2], "labels": [1, 2], "text_ids": [1, 2], "code_ids": [1, 5, 6, 2]}]
+    with pytest.raises(ValueError, match="example 0"):
+        jepa.check_view_positions(examples, last_token=-3)
+
+
+def test_check_view_positions_rejects_a_position_past_the_end():
+    with pytest.raises(ValueError, match="example 0"):
+        jepa.check_view_positions(EXAMPLES, last_token=0)
+
+
+def test_check_view_positions_accepts_views_of_length_4_and_5():
+    examples = [{"text_ids": [1, 5, 6, 2], "code_ids": [1, 7, 8, 9, 2]}]
+    jepa.check_view_positions(examples, last_token=-2)

@@ -4,7 +4,6 @@ import argparse
 import math
 import os
 import random
-import shutil
 
 import mlx.core as mx
 import mlx.optimizers as optim
@@ -21,13 +20,16 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Fine-tune a causal LM with the LLM-JEPA loss (MLX)")
     parser.add_argument("--train_file", required=True, help="Training JSONL file")
     parser.add_argument("--model_name", default=DEFAULT_MODEL, help="mlx-lm model repo or path (unquantized)")
-    parser.add_argument("--output_dir", default="./fine-tuned", help="Output directory (replaced if it exists)")
+    parser.add_argument("--output_dir", default="./fine-tuned",
+                        help="Output directory; the latest model is saved here every epoch")
     parser.add_argument("--max_length", type=int, default=512, help="Maximum sequence length")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--grad_accum", type=int, default=4, help="Gradient accumulation steps")
     parser.add_argument("--learning_rate", type=float, default=2e-5)
     parser.add_argument("--num_epochs", type=int, default=3)
     parser.add_argument("--eval_steps", type=int, default=10, help="Log every this many steps")
+    parser.add_argument("--keep_epochs", action="store_true",
+                        help="Also keep each epoch's model in an epoch-N folder inside --output_dir")
     parser.add_argument("--lora", action="store_true", help="LoRA instead of full fine-tuning")
     parser.add_argument("--lora_rank", type=int, default=16)
     parser.add_argument("--finetune_seed", type=int, default=42)
@@ -77,7 +79,17 @@ def prepare_dataset(args, tokenizer):
     ]
 
 
-def train(args, model, examples):
+def count_truncated(examples, max_length):
+    """Number of examples whose inputs or views reached max_length."""
+    lengths = ("input_ids", "text_ids", "code_ids")
+    return sum(
+        any(len(example[name]) >= max_length for name in lengths if name in example)
+        for example in examples
+    )
+
+
+def train(args, model, examples, on_epoch_end):
+    """Train, calling on_epoch_end(epoch) after each epoch; returns the optimizer updates applied."""
     steps_per_epoch = len(examples) // args.batch_size  # drops the last partial batch
     # like transformers.Trainer, a partial accumulation group is applied at each epoch's end
     updates = math.ceil(steps_per_epoch / args.grad_accum) * args.num_epochs
@@ -105,7 +117,9 @@ def train(args, model, examples):
                 print(f"epoch {epoch + 1} step {index + 1}/{steps_per_epoch} "
                       f"loss {metrics['loss']:.4f} llm_loss {metrics['lm']:.4f} "
                       f"jepa_loss {metrics['jepa']:.4f}", flush=True)
+        on_epoch_end(epoch + 1)
     model.eval()
+    return int(optimizer.step.item())
 
 
 def main(argv=None):
@@ -121,13 +135,18 @@ def main(argv=None):
         model_lib.apply_lora(model, args.lora_rank)
     examples = prepare_dataset(args, tokenizer)
     print(f"Train samples: {len(examples)}")
+    if not args.regular:
+        jepa.check_view_positions(examples, args.last_token)
+    print(f"Examples cut at --max_length {args.max_length}: "
+          f"{count_truncated(examples, args.max_length)}")
 
-    train(args, model, examples)
+    def save_epoch(epoch):
+        model_lib.save(
+            args.output_dir, model, tokenizer, config, epoch=epoch, keep_epoch=args.keep_epochs
+        )
+        print(f"Epoch {epoch}: model saved to {args.output_dir}", flush=True)
 
-    if args.lora:
-        model_lib.fuse_lora(model)
-    shutil.rmtree(args.output_dir, ignore_errors=True)
-    model_lib.save(args.output_dir, model, tokenizer, config)
+    train(args, model, examples, save_epoch)
     print(f"Training completed. Model saved to {args.output_dir}")
 
 

@@ -1,5 +1,8 @@
 """Model plumbing on top of mlx-lm: loading, new-token embeddings, LoRA, saving."""
 
+import os
+import shutil
+from contextlib import contextmanager
 from pathlib import Path
 
 import mlx.core as mx
@@ -12,6 +15,8 @@ from data import SPECIAL_TOKENS
 
 INIT_STD = 0.02  # transformers' initializer_range default
 LORA_DROPOUT = 0.1
+STAGING_DIR = ".saving"
+WEIGHT_PATTERN = "model*.safetensors"  # what mlx_lm.load reads from a model folder
 LORA_SCALE = 2.0  # upstream uses lora_alpha = 2 * rank
 
 
@@ -77,12 +82,53 @@ def apply_lora(model, rank):
 
 
 def fuse_lora(model):
-    fused = [(name, m.fuse()) for name, m in model.named_modules() if hasattr(m, "fuse")]
-    model.update_modules(tree_unflatten(fused))
+    """Swap every LoRA layer for its merged plain layer; returns the adapters it replaced."""
+    adapters = [(name, m) for name, m in model.named_modules() if hasattr(m, "fuse")]
+    if adapters:
+        model.update_modules(tree_unflatten([(name, m.fuse()) for name, m in adapters]))
+    return adapters
 
 
-def save(output_dir, model, tokenizer, config):
+@contextmanager
+def merged_adapters(model):
+    """Run with merged layers, then put the same adapter modules back, even on failure."""
+    adapters = fuse_lora(model)
+    try:
+        yield
+    finally:
+        if adapters:
+            model.update_modules(tree_unflatten(adapters))
+
+
+def _write_model(staging, model, tokenizer, config):
+    with merged_adapters(model):
+        save_model(staging, model)
+    save_config(dict(config), staging / "config.json")
+    tokenizer.save_pretrained(staging)
+
+
+def _weights_last(files):
+    return sorted(files, key=lambda path: (path.match(WEIGHT_PATTERN), path.name))
+
+
+def save(output_dir, model, tokenizer, config, *, epoch=None, keep_epoch=False):
+    """Write a complete model into a staging folder, then rename it into place.
+
+    An interrupted save leaves the previous model untouched. The weight files are renamed last;
+    for a model stored as several weight files, a crash between those renames can leave a mix.
+    """
     output_dir = Path(output_dir)
-    save_model(output_dir, model)
-    save_config(dict(config), output_dir / "config.json")
-    tokenizer.save_pretrained(output_dir)
+    staging = output_dir / STAGING_DIR
+    if staging.exists():
+        shutil.rmtree(staging)
+    _write_model(staging, model, tokenizer, config)
+    staged = _weights_last(staging.iterdir())
+    if keep_epoch:
+        shutil.copytree(staging, output_dir / f"epoch-{epoch}", dirs_exist_ok=True)
+    for path in staged:
+        os.replace(path, output_dir / path.name)
+    new_names = {path.name for path in staged}
+    for stale in output_dir.glob(WEIGHT_PATTERN):
+        if stale.name not in new_names:
+            stale.unlink()
+    staging.rmdir()

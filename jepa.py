@@ -1,5 +1,7 @@
 """LLM-JEPA objective: next-token loss plus an embedding-space loss between two views."""
 
+import math
+
 import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_flatten, tree_map
@@ -30,6 +32,18 @@ def collate(examples, last_token):
         "views": _pad(views, PAD_ID),
         "view_last": mx.array([len(view) + last_token for view in views]),
     }
+
+
+def check_view_positions(examples, last_token):
+    """Raise, naming the example, when `len(view) + last_token` falls outside its view."""
+    for index, example in enumerate(examples):
+        for name in ("text_ids", "code_ids"):
+            length = len(example[name])
+            if not 0 <= length + last_token < length:
+                raise ValueError(
+                    f"example {index}: --last_token {last_token} is outside its {name} "
+                    f"of length {length}"
+                )
 
 
 def view_embeddings(model, batch):
@@ -108,6 +122,9 @@ def make_train_step(model, optimizer, *, gamma, lbd, kind, grad_accum):
             grads, count = None, 0
         pending.update(grads=grads, count=count)
         mx.eval(model.parameters(), optimizer.state, grads, total, lm, jepa)
-        return {"loss": total.item(), "lm": lm.item(), "jepa": jepa.item()}
+        metrics = {"loss": total.item(), "lm": lm.item(), "jepa": jepa.item()}
+        if not all(math.isfinite(value) for value in metrics.values()):
+            raise FloatingPointError(f"Training stopped: a loss is not a finite number ({metrics})")
+        return metrics
 
     return step
