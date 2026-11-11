@@ -31,7 +31,7 @@ Read this before trusting any number that comes out of it.
 
 | | |
 |---|---|
-| Unit tests | 35 pass, offline, in a few seconds |
+| Unit tests | 73 pass, offline, in a few seconds |
 | LoRA + JEPA end to end | Ran on Llama-3.2-1B: trained, saved, reloaded, evaluated |
 | Token layout | Checked against upstream on a real example |
 | Full fine-tuning | Three steps ran and the loss fell; a complete run was never finished |
@@ -41,9 +41,9 @@ Read this before trusting any number that comes out of it.
 ## Requirements
 
 - An Apple Silicon Mac
-- [uv](https://docs.astral.sh/uv/) (it installs Python 3.11 to 3.13 and the dependencies)
-- About 6 GB of free memory for LoRA on a 1B model, about 11.5 GB for full fine-tuning
-- `sqlite3` on the path, only for the Spider dataset
+- [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 or 3.13 and the dependencies)
+- About 6 GB of free memory for LoRA on a 1B model, and more than 11.5 GB for full fine-tuning (see Memory and speed)
+- Free disk of about twice the model's size, used while a save is being written
 
 ## Quick start
 
@@ -65,8 +65,9 @@ uv run python evaluate.py --model_name ./fine-tuned \
   --input_file datasets/synth_test.jsonl --output_file eval.jsonl
 ```
 
-The first run downloads `mlx-community/Llama-3.2-1B-Instruct-bf16` (about 2.5 GB). `--output_dir`
-is deleted and rewritten on every run.
+The first run downloads `mlx-community/Llama-3.2-1B-Instruct-bf16` (about 2.5 GB). The model is
+saved to `--output_dir` at the end of every epoch, replacing the previous save. Nothing else in that
+folder is deleted, except model weight files that the new save has replaced.
 
 `finetune.py` prints three numbers per step. `llm_loss` is the next-token loss, `jepa_loss` is the
 embedding distance, and `loss` is the weighted sum being minimized. A falling loss shows the
@@ -94,7 +95,8 @@ Set `MODEL=` and `LAST_TOKEN=` in the environment to change the model.
 |---|---|---|
 | `--train_file` | required | Training JSONL |
 | `--model_name` | `mlx-community/Llama-3.2-1B-Instruct-bf16` | Unquantized mlx-lm repo or local path |
-| `--output_dir` | `./fine-tuned` | Where the tuned model is saved |
+| `--output_dir` | `./fine-tuned` | Where the latest model is saved, at the end of every epoch |
+| `--keep_epochs` | off | Also keep each epoch's model in an `epoch-N` folder inside `--output_dir` |
 | `--regular` | off | Baseline: no JEPA term |
 | `--lbd` | 0.1 | λ, weight of the JEPA loss |
 | `--gamma` | 1.0 | γ, weight of the next-token loss |
@@ -143,26 +145,32 @@ publications. Each line is a three-message chat: system prompt, user turn (Text)
 |---|---|---|
 | `synth_*`, `turk_*` | English to regular expression | Exact match |
 | `gsm8k_*` | Math word problems | Final answer after `####` matches |
-| `spider_*` | English to SQL | Query results match when executed |
-| `nq_open_*` | Open-domain QA | Any generated answer appears in the reference |
+| `spider_*` | English to SQL | The query runs and returns the reference's rows; order counts only when the reference has `ORDER BY` |
+| `nq_open_*` | Open-domain QA | A reference answer appears in the output |
 | `hellaswag_*` | Sentence completion, multiple choice | Most likely of A/B/C/D |
 | `paraphrase_train` | Pretraining only | |
 | `rotten_tomatoes_*`, `yelp_*` | Sentiment labels after pretraining | Use `--startswith` |
 
 The metric is chosen from the file name, so keep the prefixes. Spider also needs `spider_data.zip`
-from the upstream repo unzipped, with `--spider_path spider_data/database`.
+from the upstream repo unzipped, with `--spider_path spider_data/database`. Model-written SQL runs
+on a read-only connection that permits only reading, so it cannot change the databases or run
+commands.
 
 ## Memory and speed
 
-Measured with Llama-3.2-1B in bf16, batch size 4, on `synth`, on a 24 GB M5:
+Measured with Llama-3.2-1B in bf16 on `synth`, on a 24 GB M5, at `--batch_size 4 --grad_accum 1`:
 
 | Mode | Peak memory | Time per step |
 |---|---|---|
 | LoRA, rank 16 | about 6 GB | about 1.1 s |
 | Full fine-tuning | about 11.3 GB | about 4 s when it fits in RAM |
 
-Full fine-tuning that spills into swap runs tens of times slower, so check free memory first. One
-epoch of `synth` is 2,000 steps at batch size 4.
+The default `--grad_accum 4` holds one more copy of the gradients between steps, about 2.5 GB more
+for full fine-tuning; that setting was not measured. Full fine-tuning that spills into swap runs tens
+of times slower, so check free memory first. One epoch of `synth` is 2,000 steps at batch size 4.
+
+A save writes the complete new model before replacing the old one, so it needs free disk of about
+twice the model's size. `--keep_epochs` adds one model per epoch.
 
 ## Differences from the PyTorch original
 
@@ -177,10 +185,24 @@ epoch of `synth` is 2,000 steps at batch size 4.
   AdamW without weight decay, linear decay to zero, gradient clipping at 1.0, and a partial
   accumulation group applied at the end of each epoch. Shuffle order differs, so runs are not
   bit-for-bit comparable.
-- **`evaluate.py --output_file`** writes per-example results. Upstream leaves the file empty.
+- **NQ-Open and Spider are scored differently, on purpose.** Scores on these two datasets are not
+  comparable with upstream's scripts or with the numbers the paper reports.
+  - *NQ-Open:* a reference answer must appear in the output, as the paper states. Upstream checks the
+    reverse, so on the 1,769 test questions an empty output scores 100% there and
+    `The answer is <right answer>.` scores 0%.
+  - *Spider:* a query must run and return the reference's rows. Upstream compares what the `sqlite3`
+    command-line tool prints, and a failed query prints nothing, so it matches any reference that
+    also prints nothing. With `sqlite3` 3.54.1 the text `this is not sql` scores correct on 365 of
+    1,447 test examples there; here it scores correct on none.
+  - *Spider details:* double-quoted text values are read as text (326 references use them), and row
+    order counts only when the reference has an `ORDER BY` (336 of 1,447 do).
+- **A model is saved every epoch, and the output folder is never deleted.** Upstream deletes the
+  output folder at the start of a run.
+- **`evaluate.py --output_file`** writes per-example results as each example is scored. Upstream
+  leaves the file empty.
 - **Not ported:** `stp.py` (Semantic Tube Prediction, a different paper), `finetune8bh200.py`,
-  multi-GPU training, FLOP tracking, the t-SNE dump, per-epoch checkpoints, train/test splitting,
-  and OpenELM and phi support.
+  multi-GPU training, FLOP tracking, the t-SNE dump, train/test splitting, resuming an interrupted
+  run, and OpenELM and phi support.
 
 ## Known caveats
 
@@ -196,6 +218,14 @@ epoch of `synth` is 2,000 steps at batch size 4.
 - **New tokens.** The 11 added special tokens start from the mean embedding. Under `--lora` the
   embeddings are frozen, so with `--predictors` above 1 the predictor tokens differ only by position.
 - **Quantized models** are rejected; training needs full-precision weights.
+- **Spider limits.** One test reference (`document_management`) is malformed and cannot run, so that
+  example scores wrong for every model and is named in the report. On the 63 examples whose
+  reference returns no rows, a valid but wrong query that also returns no rows still scores correct.
+  A generated query that never finishes stalls the evaluation; there is no time limit.
+- **Interrupted saves.** A save interrupted while it is being written leaves the previous model in
+  place. For a model stored as several weight files (over 5 GB), a crash during the final renames
+  can leave a mix of old and new weights.
+- **A saved model is not a resumable run.** Optimizer state is not saved.
 
 ## Layout
 
@@ -206,7 +236,7 @@ epoch of `synth` is 2,000 steps at batch size 4.
 | `jepa.py` | Losses, batching, the training step |
 | `data.py` | Chat formatting, label masking, Text/Code views |
 | `model.py` | mlx-lm loading, new-token embeddings, LoRA, saving |
-| `tests/` | Unit tests on a tiny random model; no downloads |
+| `tests/` | Unit tests on a tiny random model and tokenizer; no downloads |
 | `run.sh` | Five-seed baseline versus LLM-JEPA driver |
 
 ## Credit and license

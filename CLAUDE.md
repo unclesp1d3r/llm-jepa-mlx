@@ -7,7 +7,7 @@ flags, and the list of differences from upstream.
 ## Commands
 
 ```sh
-uv sync                                   # install (Python 3.11-3.13, mlx-lm)
+uv sync                                   # install (Python 3.12-3.13, mlx-lm)
 uv run pytest                             # all tests, offline, a few seconds
 uv run pytest tests/test_jepa.py -k lora  # one test
 uv run python finetune.py --help
@@ -22,6 +22,16 @@ The point of this repo is to compute what the PyTorch code computes. When changi
 the matching upstream function first and keep flag names and semantics. Anything that deviates on
 purpose is listed under "Differences from the PyTorch original" in README.md; add to that list when
 you add a deviation.
+
+Two metrics deliberately do not match upstream, by the repo owner's decision, because upstream's
+checks were measured wrong on the real test sets. Do not restore upstream's behavior:
+
+- NQ-Open: a reference answer must appear in the output (upstream checks the reverse).
+- Spider: queries run through Python's `sqlite3` on a read-only connection that permits only
+  reading, with double-quoted text values accepted. A query that fails is wrong. Row order counts
+  only when the reference has `ORDER BY`. A reference that cannot run makes its example wrong and is
+  reported. Never route model-written SQL through the `sqlite3` command-line tool: it executes
+  dot-commands such as `.shell`.
 
 These look like bugs but are upstream behavior kept for parity. Do not "fix" them silently:
 
@@ -65,7 +75,13 @@ rows, so the first half of the batch is Text. `view_last` is `len(view) + last_t
   basename, in both `finetune.py` and `evaluate.py`.
 - **Embedding resize changes `vocab_size`.** `model.load` returns an updated config; that config,
   not the original, must be the one saved.
-- **LoRA is fused before saving**, so a saved model is always plain weights that `mlx_lm.load` reads.
+- **Saves go through a staging folder.** `model.save` writes a complete model into `.saving` inside
+  the output folder, then renames the files into place, weight files last. It never deletes the
+  output folder; the only files it removes are `model*.safetensors` files the new save replaced,
+  because `mlx_lm.load` loads every file matching that pattern.
+- **LoRA saves swap, then restore.** Each save temporarily replaces the adapters with merged layers
+  and puts the same adapter modules back afterwards, also on failure, so a saved model is always
+  plain weights and training keeps its adapters and optimizer state.
 - **MLX is lazy.** The training step calls `mx.eval` on parameters, optimizer state and pending
   gradients every step. Dropping that lets the graph grow without bound.
 - **bf16.** Model weights are bf16. Losses and the gradient norm are computed in float32 on purpose.
@@ -76,7 +92,8 @@ rows, so the first half of the batch is Text. `view_last` is `len(view) + last_t
 
 Tests build a two-layer random Llama (`tiny_model` in `tests/test_jepa.py`) and a character-level
 fake tokenizer (`CharTokenizer` in `tests/test_data.py`), so they need no network and no model
-download. Write the test first, then the change. New behavior in `data.py` or `jepa.py` needs a test.
+download. Save and reload tests build a small real tokenizer in-process (`tests/test_model.py`), and
+Spider tests build a small SQLite database in a temporary folder. Write the test first, then the change. New behavior in `data.py` or `jepa.py` needs a test.
 
 ## Running real training
 
@@ -84,6 +101,6 @@ Do not start a real fine-tune or evaluation to check a change unless asked. It d
 model, a full fine-tune of a 1B model peaks near 11.3 GB, and on a machine without that much free
 memory it swaps and slows by an order of magnitude. LoRA peaks near 6 GB. For a quick end-to-end
 check, use `--lora` on the first 200 lines of `datasets/synth_train.jsonl` with `--num_epochs 1`
-and `evaluate.py --max_examples 40`. `--output_dir` is deleted at the end of every run.
+and `evaluate.py --max_examples 40`. The model is saved to `--output_dir` after every epoch.
 
 No full-length run has been done with this code, so there is no accuracy baseline to compare to.
