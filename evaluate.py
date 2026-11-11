@@ -4,7 +4,10 @@ import argparse
 import json
 import os
 import re
-import subprocess
+import sqlite3
+from collections import Counter
+from contextlib import nullcontext
+from pathlib import Path
 
 import mlx.core as mx
 import mlx_lm
@@ -16,18 +19,55 @@ from data import get_assistant_messages, get_messages, get_user_messages, load_j
 GSM8K_ANSWER = re.compile(r"\n#### (.+)$")
 SPIDER_DB = re.compile(r"For db_id:\[(.+)\]")
 OPTIONS = ["A", "B", "C", "D"]
+READ_ACTIONS = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE}
 
 
 def _run_sql(db_file, query):
-    return subprocess.run(["sqlite3", db_file, query], capture_output=True, text=True).stdout
+    """Rows of a read-only query, or None when it cannot run. Text stays bytes so any content compares."""
+    conn = sqlite3.connect(f"{Path(db_file).resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        conn.setconfig(sqlite3.SQLITE_DBCONFIG_DQS_DML, True)
+        conn.set_authorizer(_read_only_authorizer)
+        conn.text_factory = bytes
+        return conn.execute(query).fetchall()
+    except (sqlite3.Error, ValueError):
+        return None
+    finally:
+        conn.close()
 
 
-def _spider_correct(generated, messages, spider_path):
+def _read_only_authorizer(action, *_):
+    return sqlite3.SQLITE_OK if action in READ_ACTIONS else sqlite3.SQLITE_DENY
+
+
+def _spider_db_file(messages, spider_path):
     db_id = SPIDER_DB.search(messages[1]["content"]).group(1)
     db_file = os.path.join(spider_path, db_id, db_id + ".sqlite")
     if not os.path.exists(db_file):
         raise FileNotFoundError(f"{db_file} not found; unzip spider_data.zip and pass --spider_path")
-    return _run_sql(db_file, generated) == _run_sql(db_file, messages[2]["content"])
+    return db_id, db_file
+
+
+def _same_rows(generated_rows, reference_rows, reference_sql):
+    if re.search("ORDER BY", reference_sql, re.IGNORECASE):
+        return generated_rows == reference_rows
+    return Counter(generated_rows) == Counter(reference_rows)
+
+
+def _spider_correct(generated, messages, spider_path):
+    _, db_file = _spider_db_file(messages, spider_path)
+    reference_sql = messages[2]["content"]
+    reference_rows = _run_sql(db_file, reference_sql)
+    generated_rows = _run_sql(db_file, generated)
+    if reference_rows is None or generated_rows is None:
+        return False
+    return _same_rows(generated_rows, reference_rows, reference_sql)
+
+
+def spider_unscorable_db_id(messages, spider_path):
+    """The database id when the reference query cannot run, else None."""
+    db_id, db_file = _spider_db_file(messages, spider_path)
+    return db_id if _run_sql(db_file, messages[2]["content"]) is None else None
 
 
 def _gsm8k_answer(text):
@@ -45,7 +85,7 @@ def is_correct(generated, messages, input_file, spider_path="", startswith=False
     if dataset.startswith("spider"):
         return _spider_correct(generated, messages, spider_path)
     if dataset.startswith("nq_open"):
-        return any(answer in expected for answer in generated.split("; "))
+        return any(answer in generated for answer in expected.split("; "))
     return generated == expected
 
 
@@ -122,6 +162,8 @@ def evaluate_example(args, model, wrapper, messages):
         "correct": is_correct(generated, messages, args.input_file, args.spider_path),
         "startswith": is_correct(generated, messages, args.input_file, startswith=True),
     }
+    if os.path.basename(args.input_file).startswith("spider"):
+        result = {**result, "unscorable_db_id": spider_unscorable_db_id(messages, args.spider_path)}
     if not args.similarity:
         return result
     views = (get_user_messages(messages), get_assistant_messages(original, messages))
@@ -139,6 +181,10 @@ def report(args, results):
     if args.startswith:
         line += f", {sum(r['startswith'] for r in results) / total}"
     print(line)
+    unscorable = [r["unscorable_db_id"] for r in results if r.get("unscorable_db_id")]
+    if unscorable:
+        print(f"{len(unscorable)} examples have a reference query that cannot run (scored wrong): "
+              f"{', '.join(unscorable)}")
     if args.similarity:
         wrong = [r for r in results if not r["correct"]]
         for name, group in (("correct", correct), ("incorrect", wrong)):
@@ -146,6 +192,18 @@ def report(args, results):
             if sims:
                 print(f"cosine similarity ({name}, n={len(sims)}): "
                       f"mean {np.mean(sims):.4f} std {np.std(sims):.4f}")
+
+
+def run_examples(rows, score, out=None):
+    """Score each row, writing and flushing its JSON line as soon as it exists."""
+    results = []
+    for row in rows:
+        result = score(row["messages"])
+        results.append(result)
+        if out:
+            out.write(json.dumps(result) + "\n")
+            out.flush()
+    return results
 
 
 def main(argv=None):
@@ -157,13 +215,12 @@ def main(argv=None):
         raise ValueError(f"No examples in {args.input_file}")
     print(f"Loaded {len(rows)} examples from {args.input_file}")
 
-    results = [
-        evaluate_example(args, model, wrapper, row["messages"])
-        for row in tqdm(rows, desc="Generating responses")
-    ]
-    if args.output_file:
-        with open(args.output_file, "w") as out:
-            out.writelines(json.dumps(result) + "\n" for result in results)
+    with open(args.output_file, "w") if args.output_file else nullcontext() as out:
+        results = run_examples(
+            tqdm(rows, desc="Generating responses"),
+            lambda messages: evaluate_example(args, model, wrapper, messages),
+            out,
+        )
     report(args, results)
 
 
